@@ -1,0 +1,510 @@
+From 956abee9855e2c3a6872931b1dc54be8c5bb2cb6 Mon Sep 17 00:00:00 2001
+From: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+Date: Thu, 25 Sep 2025 20:29:53 +0000
+Subject: [PATCH] feat: integrate Helius RPC and comprehensive session logging
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Add SessionLogger for comprehensive tracking with separate files per run
+- Integrate Helius RPC endpoints for premium WebSocket performance
+- Add QualityFilter with volume/liquidity/age checks (>k, >0k, >30min)
+- Enhance existing filters with detailed logging and counters
+- Implement periodic statistics reporting every 30 seconds
+- Add graceful shutdown with session data saving
+- Update trading amount to 0.00001 SOL as requested
+- Maintain existing WebSocket architecture and trading logic
+
+Link to Devin run: https://app.devin.ai/sessions/0824c27927ad4421847ccefc9a5dac27
+Requested by: артем витюгов (@artv1t)
+
+Co-Authored-By: артем витюгов <top33824@gmail.com>
+---
+ .env.copy                 |   8 +-
+ analysis-logger.ts        | 164 ++++++++++++++++++++++++++++++++++++++
+ bot.ts                    |   8 +-
+ filters/pool-filters.ts   |  18 +++++
+ filters/quality.filter.ts | 107 +++++++++++++++++++++++++
+ helpers/constants.ts      |   4 +-
+ index.ts                  |  19 ++++-
+ 7 files changed, 319 insertions(+), 9 deletions(-)
+ create mode 100644 analysis-logger.ts
+ create mode 100644 filters/quality.filter.ts
+
+diff --git a/.env.copy b/.env.copy
+index 07681b9..ac5a08d 100644
+--- a/.env.copy
++++ b/.env.copy
+@@ -1,9 +1,9 @@
+ # Wallet
+ PRIVATE_KEY=
+ 
+-# Connection
+-RPC_ENDPOINT=https://api.mainnet-beta.solana.com
+-RPC_WEBSOCKET_ENDPOINT=wss://api.mainnet-beta.solana.com
++# Connection (Helius RPC)
++HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=your_helius_api_key
++HELIUS_WS_URL=wss://mainnet.helius-rpc.com/?api-key=your_helius_api_key
+ COMMITMENT_LEVEL=confirmed
+ 
+ # Bot
+@@ -21,7 +21,7 @@ CUSTOM_FEE=0.006
+ 
+ # Buy
+ QUOTE_MINT=WSOL
+-QUOTE_AMOUNT=0.001
++QUOTE_AMOUNT=0.00001
+ AUTO_BUY_DELAY=0
+ MAX_BUY_RETRIES=10
+ BUY_SLIPPAGE=20
+diff --git a/analysis-logger.ts b/analysis-logger.ts
+new file mode 100644
+index 0000000..b84249b
+--- /dev/null
++++ b/analysis-logger.ts
+@@ -0,0 +1,164 @@
++import { writeFileSync, mkdirSync, existsSync } from 'fs';
++import { join } from 'path';
++import { logger } from './helpers';
++
++export interface SessionCounters {
++  sessionId: string;
++  startTime: number;
++  tokensDetected: number;
++  burnFilterPassed: number;
++  burnFilterFailed: number;
++  mutableFilterPassed: number;
++  mutableFilterFailed: number;
++  renouncedFilterPassed: number;
++  renouncedFilterFailed: number;
++  poolSizeFilterPassed: number;
++  poolSizeFilterFailed: number;
++  qualityFilterPassed: number;
++  qualityFilterFailed: number;
++  tradingAttempts: number;
++  tradingSuccesses: number;
++  errors: number;
++}
++
++export class SessionLogger {
++  private sessionId: string;
++  private logDir: string;
++  private counters!: SessionCounters;
++  private filterLogs: Map<string, string[]> = new Map();
++
++  constructor() {
++    this.sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
++    this.logDir = join('./logs', this.sessionId);
++    this.ensureLogDirectory();
++    this.initCounters();
++    
++    logger.info(`🔍 Analysis session started: ${this.sessionId}`);
++  }
++
++  private ensureLogDirectory() {
++    if (!existsSync('./logs')) {
++      mkdirSync('./logs', { recursive: true });
++    }
++    if (!existsSync(this.logDir)) {
++      mkdirSync(this.logDir, { recursive: true });
++    }
++  }
++
++  private initCounters() {
++    this.counters = {
++      sessionId: this.sessionId,
++      startTime: Date.now(),
++      tokensDetected: 0,
++      burnFilterPassed: 0,
++      burnFilterFailed: 0,
++      mutableFilterPassed: 0,
++      mutableFilterFailed: 0,
++      renouncedFilterPassed: 0,
++      renouncedFilterFailed: 0,
++      poolSizeFilterPassed: 0,
++      poolSizeFilterFailed: 0,
++      qualityFilterPassed: 0,
++      qualityFilterFailed: 0,
++      tradingAttempts: 0,
++      tradingSuccesses: 0,
++      errors: 0,
++    };
++  }
++
++  public logTokenDetected(tokenAddress: string) {
++    this.counters.tokensDetected++;
++    const logEntry = `${new Date().toISOString()} - Token detected: ${tokenAddress}`;
++    this.appendToFilterLog('token_detection', logEntry);
++    logger.debug(`📊 Token detected: ${tokenAddress} (Total: ${this.counters.tokensDetected})`);
++  }
++
++  public logFilterResult(filterName: string, passed: boolean, tokenAddress: string, reason?: string) {
++    const counterKey = `${filterName}${passed ? 'Passed' : 'Failed'}` as keyof SessionCounters;
++    if (typeof this.counters[counterKey] === 'number') {
++      (this.counters[counterKey] as number)++;
++    }
++
++    const status = passed ? 'PASSED' : 'FAILED';
++    const logEntry = `${new Date().toISOString()} - ${status}: ${tokenAddress}${reason ? ` - ${reason}` : ''}`;
++    this.appendToFilterLog(`${filterName}_filter`, logEntry);
++    
++    logger.debug(`🔍 ${filterName} filter ${status}: ${tokenAddress}${reason ? ` - ${reason}` : ''}`);
++  }
++
++  public logTradingAttempt(tokenAddress: string, success: boolean, signature?: string, error?: string) {
++    this.counters.tradingAttempts++;
++    if (success) {
++      this.counters.tradingSuccesses++;
++    }
++
++    const status = success ? 'SUCCESS' : 'FAILED';
++    const logEntry = `${new Date().toISOString()} - ${status}: ${tokenAddress}${signature ? ` - Signature: ${signature}` : ''}${error ? ` - Error: ${error}` : ''}`;
++    this.appendToFilterLog('trading', logEntry);
++    
++    logger.info(`💰 Trading ${status}: ${tokenAddress}${signature ? ` - ${signature}` : ''}`);
++  }
++
++  public logError(error: string, context?: string) {
++    this.counters.errors++;
++    const logEntry = `${new Date().toISOString()} - ERROR: ${error}${context ? ` - Context: ${context}` : ''}`;
++    this.appendToFilterLog('errors', logEntry);
++    
++    logger.error(`❌ Error logged: ${error}`);
++  }
++
++  private appendToFilterLog(filterName: string, logEntry: string) {
++    if (!this.filterLogs.has(filterName)) {
++      this.filterLogs.set(filterName, []);
++    }
++    this.filterLogs.get(filterName)!.push(logEntry);
++  }
++
++  public printStats() {
++    const runtime = Math.floor((Date.now() - this.counters.startTime) / 1000);
++    const tokensPerSecond = this.counters.tokensDetected / Math.max(runtime, 1);
++    
++    logger.info(`📊 === SESSION STATISTICS (${runtime}s runtime) ===`);
++    logger.info(`🔍 Tokens Detected: ${this.counters.tokensDetected} (${tokensPerSecond.toFixed(2)}/sec)`);
++    
++    if (this.counters.tokensDetected > 0) {
++      const burnPassRate = ((this.counters.burnFilterPassed / (this.counters.burnFilterPassed + this.counters.burnFilterFailed)) * 100).toFixed(1);
++      const mutablePassRate = ((this.counters.mutableFilterPassed / (this.counters.mutableFilterPassed + this.counters.mutableFilterFailed)) * 100).toFixed(1);
++      const renouncedPassRate = ((this.counters.renouncedFilterPassed / (this.counters.renouncedFilterPassed + this.counters.renouncedFilterFailed)) * 100).toFixed(1);
++      const poolSizePassRate = ((this.counters.poolSizeFilterPassed / (this.counters.poolSizeFilterPassed + this.counters.poolSizeFilterFailed)) * 100).toFixed(1);
++      const qualityPassRate = ((this.counters.qualityFilterPassed / (this.counters.qualityFilterPassed + this.counters.qualityFilterFailed)) * 100).toFixed(1);
++      
++      logger.info(`🔥 Burn Filter: ${this.counters.burnFilterPassed} passed, ${this.counters.burnFilterFailed} failed (${burnPassRate}% pass rate)`);
++      logger.info(`🔧 Mutable Filter: ${this.counters.mutableFilterPassed} passed, ${this.counters.mutableFilterFailed} failed (${mutablePassRate}% pass rate)`);
++      logger.info(`👑 Renounced Filter: ${this.counters.renouncedFilterPassed} passed, ${this.counters.renouncedFilterFailed} failed (${renouncedPassRate}% pass rate)`);
++      logger.info(`💧 Pool Size Filter: ${this.counters.poolSizeFilterPassed} passed, ${this.counters.poolSizeFilterFailed} failed (${poolSizePassRate}% pass rate)`);
++      logger.info(`⭐ Quality Filter: ${this.counters.qualityFilterPassed} passed, ${this.counters.qualityFilterFailed} failed (${qualityPassRate}% pass rate)`);
++    }
++    
++    logger.info(`💰 Trading: ${this.counters.tradingSuccesses}/${this.counters.tradingAttempts} successful (${this.counters.tradingAttempts > 0 ? ((this.counters.tradingSuccesses / this.counters.tradingAttempts) * 100).toFixed(1) : '0'}% success rate)`);
++    logger.info(`❌ Errors: ${this.counters.errors}`);
++    logger.info(`📁 Session ID: ${this.sessionId}`);
++  }
++
++  public saveSession() {
++    try {
++      for (const [filterName, logs] of this.filterLogs.entries()) {
++        const filePath = join(this.logDir, `${filterName}.log`);
++        writeFileSync(filePath, logs.join('\n'));
++      }
++
++      const summaryPath = join(this.logDir, 'session_summary.json');
++      const summary = {
++        ...this.counters,
++        endTime: Date.now(),
++        runtime: Math.floor((Date.now() - this.counters.startTime) / 1000),
++        tokensPerSecond: this.counters.tokensDetected / Math.max((Date.now() - this.counters.startTime) / 1000, 1),
++      };
++      writeFileSync(summaryPath, JSON.stringify(summary, null, 2));
++      
++      logger.info(`💾 Session data saved to: ${this.logDir}`);
++    } catch (error) {
++      logger.error(`Failed to save session data: ${error}`);
++    }
++  }
++}
+diff --git a/bot.ts b/bot.ts
+index 835aca8..0a8f831 100644
+--- a/bot.ts
++++ b/bot.ts
+@@ -19,6 +19,7 @@ import { MarketCache, PoolCache, SnipeListCache } from './cache';
+ import { PoolFilters } from './filters';
+ import { TransactionExecutor } from './transactions';
+ import { createPoolKeys, logger, NETWORK, sleep } from './helpers';
++import { SessionLogger } from './analysis-logger';
+ import { Mutex } from 'async-mutex';
+ import BN from 'bn.js';
+ import { WarpTransactionExecutor } from './transactions/warp-transaction-executor';
+@@ -72,6 +73,7 @@ export class Bot {
+     private readonly poolStorage: PoolCache,
+     private readonly txExecutor: TransactionExecutor,
+     readonly config: BotConfig,
++    private readonly sessionLogger?: SessionLogger,
+   ) {
+     this.isWarp = txExecutor instanceof WarpTransactionExecutor;
+     this.isJito = txExecutor instanceof JitoTransactionExecutor;
+@@ -81,7 +83,7 @@ export class Bot {
+       quoteToken: this.config.quoteToken,
+       minPoolSize: this.config.minPoolSize,
+       maxPoolSize: this.config.maxPoolSize,
+-    });
++    }, this.sessionLogger);
+ 
+     if (this.config.useSnipeList) {
+       this.snipeListCache = new SnipeListCache();
+@@ -172,6 +174,10 @@ export class Bot {
+               `Confirmed buy tx`,
+             );
+ 
++            if (this.sessionLogger) {
++              this.sessionLogger.logTradingAttempt(poolState.baseMint.toString(), true, result.signature);
++            }
++
+             break;
+           }
+ 
+diff --git a/filters/pool-filters.ts b/filters/pool-filters.ts
+index f74d925..db42349 100644
+--- a/filters/pool-filters.ts
++++ b/filters/pool-filters.ts
+@@ -5,7 +5,9 @@ import { BurnFilter } from './burn.filter';
+ import { MutableFilter } from './mutable.filter';
+ import { RenouncedFreezeFilter } from './renounced.filter';
+ import { PoolSizeFilter } from './pool-size.filter';
++import { QualityFilter } from './quality.filter';
+ import { CHECK_IF_BURNED, CHECK_IF_FREEZABLE, CHECK_IF_MINT_IS_RENOUNCED, CHECK_IF_MUTABLE, CHECK_IF_SOCIALS, logger } from '../helpers';
++import { SessionLogger } from '../analysis-logger';
+ 
+ export interface Filter {
+   execute(poolKeysV4: LiquidityPoolKeysV4): Promise<FilterResult>;
+@@ -28,6 +30,7 @@ export class PoolFilters {
+   constructor(
+     readonly connection: Connection,
+     readonly args: PoolFilterArgs,
++    private readonly sessionLogger?: SessionLogger,
+   ) {
+     if (CHECK_IF_BURNED) {
+       this.filters.push(new BurnFilter(connection));
+@@ -44,6 +47,8 @@ export class PoolFilters {
+     if (!args.minPoolSize.isZero() || !args.maxPoolSize.isZero()) {
+       this.filters.push(new PoolSizeFilter(connection, args.quoteToken, args.minPoolSize, args.maxPoolSize));
+     }
++
++    this.filters.push(new QualityFilter(connection));
+   }
+ 
+   public async execute(poolKeys: LiquidityPoolKeysV4): Promise<boolean> {
+@@ -51,9 +56,17 @@ export class PoolFilters {
+       return true;
+     }
+ 
++    const tokenAddress = poolKeys.baseMint.toString();
+     const result = await Promise.all(this.filters.map((f) => f.execute(poolKeys)));
+     const pass = result.every((r) => r.ok);
+ 
++    if (this.sessionLogger) {
++      result.forEach((r, index) => {
++        const filterName = this.getFilterName(index);
++        this.sessionLogger!.logFilterResult(filterName, r.ok, tokenAddress, r.message);
++      });
++    }
++
+     if (pass) {
+       return true;
+     }
+@@ -64,4 +77,9 @@ export class PoolFilters {
+ 
+     return false;
+   }
++
++  private getFilterName(index: number): string {
++    const filterNames = ['burn', 'renounced', 'mutable', 'poolSize', 'quality'];
++    return filterNames[index] || `filter${index}`;
++  }
+ }
+diff --git a/filters/quality.filter.ts b/filters/quality.filter.ts
+new file mode 100644
+index 0000000..1a30757
+--- /dev/null
++++ b/filters/quality.filter.ts
+@@ -0,0 +1,107 @@
++import { Connection } from '@solana/web3.js';
++import { LiquidityPoolKeysV4 } from '@raydium-io/raydium-sdk';
++import { Filter, FilterResult } from './index';
++import { logger } from '../helpers';
++import axios from 'axios';
++
++interface DexScreenerData {
++  volume24h: number;
++  liquidity: number;
++  pairCreatedAt: number;
++  priceChange24h: number;
++}
++
++export class QualityFilter implements Filter {
++  constructor(
++    private readonly connection: Connection,
++    private readonly minVolumeUSD: number = 1000,
++    private readonly minLiquidityUSD: number = 10000,
++    private readonly minAgeMinutes: number = 30,
++  ) {}
++
++  async execute(poolKeys: LiquidityPoolKeysV4): Promise<FilterResult> {
++    try {
++      const tokenAddress = poolKeys.baseMint.toString();
++      
++      const dexData = await this.getDexScreenerData(tokenAddress);
++      
++      if (!dexData) {
++        return { 
++          ok: false, 
++          message: `Quality -> No DexScreener data found for ${tokenAddress}` 
++        };
++      }
++
++      if (dexData.volume24h < this.minVolumeUSD) {
++        return { 
++          ok: false, 
++          message: `Quality -> Volume $${dexData.volume24h.toFixed(0)} < $${this.minVolumeUSD}` 
++        };
++      }
++
++      if (dexData.liquidity < this.minLiquidityUSD) {
++        return { 
++          ok: false, 
++          message: `Quality -> Liquidity $${dexData.liquidity.toFixed(0)} < $${this.minLiquidityUSD}` 
++        };
++      }
++
++      const ageMinutes = (Date.now() - dexData.pairCreatedAt) / (1000 * 60);
++      if (ageMinutes < this.minAgeMinutes) {
++        return { 
++          ok: false, 
++          message: `Quality -> Age ${ageMinutes.toFixed(1)}min < ${this.minAgeMinutes}min` 
++        };
++      }
++
++      if (Math.abs(dexData.priceChange24h) > 90) {
++        return { 
++          ok: false, 
++          message: `Quality -> Extreme volatility ${dexData.priceChange24h.toFixed(1)}%` 
++        };
++      }
++
++      logger.debug(`Quality filter passed for ${tokenAddress}: Vol=$${dexData.volume24h.toFixed(0)}, Liq=$${dexData.liquidity.toFixed(0)}, Age=${ageMinutes.toFixed(1)}min`);
++      
++      return { ok: true };
++      
++    } catch (error) {
++      logger.error(`Quality filter error for ${poolKeys.baseMint.toString()}: ${error}`);
++      return { 
++        ok: false, 
++        message: `Quality -> API error: ${error instanceof Error ? error.message : 'Unknown error'}` 
++      };
++    }
++  }
++
++  private async getDexScreenerData(tokenAddress: string): Promise<DexScreenerData | null> {
++    try {
++      const response = await axios.get(
++        `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`,
++        { timeout: 5000 }
++      );
++
++      if (!response.data?.pairs || response.data.pairs.length === 0) {
++        return null;
++      }
++
++      const pairs = response.data.pairs;
++      const bestPair = pairs.reduce((best: any, current: any) => {
++        const currentLiq = parseFloat(current.liquidity?.usd || '0');
++        const bestLiq = parseFloat(best.liquidity?.usd || '0');
++        return currentLiq > bestLiq ? current : best;
++      });
++
++      return {
++        volume24h: parseFloat(bestPair.volume?.h24 || '0'),
++        liquidity: parseFloat(bestPair.liquidity?.usd || '0'),
++        pairCreatedAt: new Date(bestPair.pairCreatedAt || Date.now()).getTime(),
++        priceChange24h: parseFloat(bestPair.priceChange?.h24 || '0'),
++      };
++      
++    } catch (error) {
++      logger.debug(`Failed to fetch DexScreener data for ${tokenAddress}: ${error}`);
++      return null;
++    }
++  }
++}
+diff --git a/helpers/constants.ts b/helpers/constants.ts
+index 96ca547..c6eaaf5 100644
+--- a/helpers/constants.ts
++++ b/helpers/constants.ts
+@@ -20,8 +20,8 @@ export const PRIVATE_KEY = retrieveEnvVariable('PRIVATE_KEY', logger);
+ // Connection
+ export const NETWORK = 'mainnet-beta';
+ export const COMMITMENT_LEVEL: Commitment = retrieveEnvVariable('COMMITMENT_LEVEL', logger) as Commitment;
+-export const RPC_ENDPOINT = retrieveEnvVariable('RPC_ENDPOINT', logger);
+-export const RPC_WEBSOCKET_ENDPOINT = retrieveEnvVariable('RPC_WEBSOCKET_ENDPOINT', logger);
++export const RPC_ENDPOINT = retrieveEnvVariable('HELIUS_RPC_URL', logger);
++export const RPC_WEBSOCKET_ENDPOINT = retrieveEnvVariable('HELIUS_WS_URL', logger);
+ 
+ // Bot
+ export const LOG_LEVEL = retrieveEnvVariable('LOG_LEVEL', logger);
+diff --git a/index.ts b/index.ts
+index e443979..36a3039 100644
+--- a/index.ts
++++ b/index.ts
+@@ -4,6 +4,7 @@ import { Connection, KeyedAccountInfo, Keypair } from '@solana/web3.js';
+ import { LIQUIDITY_STATE_LAYOUT_V4, MARKET_STATE_LAYOUT_V3, Token, TokenAmount } from '@raydium-io/raydium-sdk';
+ import { AccountLayout, getAssociatedTokenAddressSync } from '@solana/spl-token';
+ import { Bot, BotConfig } from './bot';
++import { SessionLogger } from './analysis-logger';
+ import { DefaultTransactionExecutor, TransactionExecutor } from './transactions';
+ import {
+   getToken,
+@@ -139,7 +140,9 @@ function printDetails(wallet: Keypair, quoteToken: Token, bot: Bot) {
+ 
+ const runListener = async () => {
+   logger.level = LOG_LEVEL;
+-  logger.info('Bot is starting...');
++  logger.info('🚀 Bot Analysis Mode Starting...');
++  
++  const analysisLogger = new SessionLogger();
+ 
+   const marketCache = new MarketCache(connection);
+   const poolCache = new PoolCache();
+@@ -192,7 +195,7 @@ const runListener = async () => {
+     consecutiveMatchCount: CONSECUTIVE_FILTER_MATCHES,
+   };
+ 
+-  const bot = new Bot(connection, marketCache, poolCache, txExecutor, botConfig);
++  const bot = new Bot(connection, marketCache, poolCache, txExecutor, botConfig, analysisLogger);
+   const valid = await bot.validate();
+ 
+   if (!valid) {
+@@ -240,6 +243,18 @@ const runListener = async () => {
+   });
+ 
+   printDetails(wallet, quoteToken, bot);
++  
++  const statsInterval = setInterval(() => {
++    analysisLogger.printStats();
++  }, 30000); // Every 30 seconds
++  
++  process.on('SIGINT', () => {
++    logger.info('🛑 Shutting down analysis gracefully...');
++    clearInterval(statsInterval);
++    analysisLogger.saveSession();
++    listeners.stop();
++    process.exit(0);
++  });
+ };
+ 
+ runListener();
+-- 
+2.34.1
+
