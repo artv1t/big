@@ -54,6 +54,7 @@ export class Listeners extends EventEmitter {
     return this.connection.onProgramAccountChange(
       MAINNET_PROGRAM_ID.AmmV4,
       async (updatedAccountInfo) => {
+        console.log(`🔍 Pool detected: ${updatedAccountInfo.accountId.toString()}`);
         this.emit('pool', updatedAccountInfo);
       },
       this.connection.commitment,
@@ -71,12 +72,12 @@ export class Listeners extends EventEmitter {
             bytes: MAINNET_PROGRAM_ID.OPENBOOK_MARKET.toBase58(),
           },
         },
-        {
-          memcmp: {
-            offset: LIQUIDITY_STATE_LAYOUT_V4.offsetOf('status'),
-            bytes: bs58.encode([6, 0, 0, 0, 0, 0, 0, 0]),
-          },
-        },
+        // {
+        //   memcmp: {
+        //     offset: LIQUIDITY_STATE_LAYOUT_V4.offsetOf('status'),
+        //     bytes: bs58.encode([6, 0, 0, 0, 0, 0, 0, 0]),
+        //   },
+        // },
       ],
     );
   }

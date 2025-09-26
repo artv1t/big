@@ -95,10 +95,10 @@ export class Bot {
     try {
       await getAccount(this.connection, this.config.quoteAta, this.connection.commitment);
     } catch (error) {
-      logger.error(
+      logger.warn(
         `${this.config.quoteToken.symbol} token account not found in wallet: ${this.config.wallet.publicKey.toString()}`,
       );
-      return false;
+      logger.info('Continuing in analysis mode - token account will be created when needed');
     }
 
     return true;
