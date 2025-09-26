@@ -4,8 +4,13 @@
   "homepage": "https://warp.id",
   "version": "2.0.1",
   "scripts": {
+    "build": "tsc",
     "start": "ts-node index.ts",
-    "tsc": "tsc --noEmit"
+    "tsc": "tsc --noEmit",
+    "test": "ts-node test-bot-integration.ts",
+    "test:filters": "ts-node -e \"import('./test-bot-integration').then(m => new m.BotTester().testFilters())\"",
+    "test:pipeline": "ts-node -e \"import('./test-bot-integration').then(m => new m.BotTester().testFilterPipeline())\"",
+    "test:trading": "ts-node -e \"import('./test-bot-integration').then(m => new m.BotTester().testTradingManager())\""
   },
   "dependencies": {
     "@metaplex-foundation/mpl-token-metadata": "^3.2.1",

@@ -86,17 +86,16 @@ export class SessionLogger {
     logger.debug(`🔍 ${filterName} filter ${status}: ${tokenAddress}${reason ? ` - ${reason}` : ''}`);
   }
 
-  public logTradingAttempt(tokenAddress: string, success: boolean, signature?: string, error?: string) {
+  public  logTradingAttempt(tokenAddress: string, result: string, amount: number) {
     this.counters.tradingAttempts++;
-    if (success) {
+    if (result.includes('SUCCESS')) {
       this.counters.tradingSuccesses++;
     }
 
-    const status = success ? 'SUCCESS' : 'FAILED';
-    const logEntry = `${new Date().toISOString()} - ${status}: ${tokenAddress}${signature ? ` - Signature: ${signature}` : ''}${error ? ` - Error: ${error}` : ''}`;
+    const logEntry = `${new Date().toISOString()} - ${result}: ${tokenAddress} - Amount: ${amount}`;
     this.appendToFilterLog('trading', logEntry);
     
-    logger.info(`💰 Trading ${status}: ${tokenAddress}${signature ? ` - ${signature}` : ''}`);
+    logger.info(`💰 Trading ${result}: ${tokenAddress} - Amount: ${amount}`);
   }
 
   public logError(error: string, context?: string) {

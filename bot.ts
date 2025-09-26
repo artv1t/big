@@ -20,6 +20,7 @@ import { PoolFilters } from './filters';
 import { TransactionExecutor } from './transactions';
 import { createPoolKeys, logger, NETWORK, sleep } from './helpers';
 import { SessionLogger } from './analysis-logger';
+// import { TPSLTTLManager } from './trading/tp-sl-ttl.manager';
 import { Mutex } from 'async-mutex';
 import BN from 'bn.js';
 import { WarpTransactionExecutor } from './transactions/warp-transaction-executor';
@@ -175,7 +176,7 @@ export class Bot {
             );
 
             if (this.sessionLogger) {
-              this.sessionLogger.logTradingAttempt(poolState.baseMint.toString(), true, result.signature);
+              this.sessionLogger.logTradingAttempt(poolState.baseMint.toString(), 'BUY_SUCCESS', 0.0001);
             }
 
             break;
