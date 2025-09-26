@@ -6,10 +6,10 @@ import { MutableFilter } from './mutable.filter';
 import { RenouncedFreezeFilter } from './renounced.filter';
 import { PoolSizeFilter } from './pool-size.filter';
 import { QualityFilter } from './quality.filter';
-// import { RouteGateFilter } from './route-gate.filter';
-// import { OnChainFilter } from './on-chain.filter';
-// import { DexScreenerFilter } from './dexscreener.filter';
-// import { LPProtectionFilter } from './lp-protection.filter';
+import { RouteGateFilter } from './route-gate.filter';
+import { OnChainFilter } from './on-chain.filter';
+import { DexScreenerFilter } from './dexscreener.filter';
+import { LPProtectionFilter } from './lp-protection.filter';
 import { CHECK_IF_BURNED, CHECK_IF_FREEZABLE, CHECK_IF_MINT_IS_RENOUNCED, CHECK_IF_MUTABLE, CHECK_IF_SOCIALS, logger } from '../helpers';
 import { SessionLogger } from '../analysis-logger';
 
@@ -36,7 +36,7 @@ export class PoolFilters {
     readonly args: PoolFilterArgs,
     private readonly sessionLogger?: SessionLogger,
   ) {
-    // this.filters.push(new RouteGateFilter(connection, 100000, 1000)); // 0.0001 SOL, 10% max impact
+    this.filters.push(new RouteGateFilter(connection, 100000, 1000)); // 0.0001 SOL, 10% max impact
 
     if (CHECK_IF_BURNED) {
       this.filters.push(new BurnFilter(connection));
@@ -54,12 +54,10 @@ export class PoolFilters {
       this.filters.push(new PoolSizeFilter(connection, args.quoteToken, args.minPoolSize, args.maxPoolSize));
     }
 
-    // this.filters.push(new OnChainFilter(connection));
-    // this.filters.push(new LPProtectionFilter(connection));
-
+    this.filters.push(new OnChainFilter(connection));
+    this.filters.push(new LPProtectionFilter(connection));
     this.filters.push(new QualityFilter(connection));
-
-    // this.filters.push(new DexScreenerFilter(connection, true, true));
+    this.filters.push(new DexScreenerFilter(connection, true, true));
   }
 
   public async execute(poolKeys: LiquidityPoolKeysV4): Promise<boolean> {
@@ -90,7 +88,10 @@ export class PoolFilters {
   }
 
   private getFilterName(index: number): string {
-    const filterNames = ['burn', 'renounced', 'mutable', 'poolSize', 'quality'];
+    const filterNames = [
+      'route_gate', 'burn', 'renounced', 'mutable', 'poolSize', 
+      'on_chain', 'lp_protection', 'quality', 'dexscreener'
+    ];
     return filterNames[index] || `filter${index}`;
   }
 }
